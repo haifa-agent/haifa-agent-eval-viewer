@@ -6,8 +6,18 @@
 })(typeof globalThis === "undefined" ? this : globalThis, function createJsonlNormalizer() {
   "use strict";
 
-  const HAIFA_PROFILE = "Haifa Runtime Trace";
+  const HAIFA_PROFILE = "Haifa Runtime Trace V1";
   const GENERIC_PROFILE = "Generic JSONL";
+  const HAIFA_SCHEMA = "haifa-runtime-trace";
+  const HAIFA_SCHEMA_VERSION = 1;
+  const RECORD_TYPE = "trace.event";
+  const SCOPES = new Set(["STREAM", "RUN", "ATTEMPT", "ITERATION", "STEP", "TOOL_CALL"]);
+  const STATUSES = new Set(["STARTED", "ACTIVE", "SUCCESS", "FAILURE", "UNKNOWN"]);
+  const KNOWN_OPERATIONS = new Set([
+    "stream.completed", "attempt.started", "run.started", "run.completed", "run.failed", "run.cancelled", "run.timeout",
+    "loop.iteration", "context.built", "context.forced-rebuild", "model.invoke", "model.error", "model.context-too-long",
+    "model.attempt.retry-scheduled", "model.attempt.exhausted", "tool.execute", "tool.persisted", "runtime.error", "runtime.terminal-error",
+  ]);
   const SEARCH_CONTAINERS = ["event", "data", "payload", "attributes", "metadata", "message", "record"];
   const TYPE_KEYS = ["type", "event_type", "eventType", "kind", "category", "event_name", "eventName"];
   const TIME_KEYS = ["timestamp", "time", "occurred_at", "occurredAt", "created_at", "createdAt", "ts", "time_ms", "timeMs"];
@@ -79,12 +89,13 @@
 
   function isHaifaRuntimeTrace(value) {
     return isObject(value)
-      && typeof value.operation === "string"
-      && typeof value.phase === "string"
-      && typeof value.runId === "string"
-      && typeof value.sessionId === "string"
-      && Number.isInteger(value.iteration)
-      && isObject(value.attributes);
+      && value.recordType === RECORD_TYPE
+      && value.schema === HAIFA_SCHEMA
+      && value.schemaVersion === HAIFA_SCHEMA_VERSION;
+  }
+
+  function resemblesHaifaTrace(value) {
+    return isObject(value) && (value.schema === HAIFA_SCHEMA || value.recordType === RECORD_TYPE);
   }
 
   function inferGenericFamily(type, tool) {
@@ -98,7 +109,7 @@
 
   function inferHaifaFamily(operation) {
     const prefix = operation.split(".", 1)[0].toLowerCase();
-    return ["loop", "context", "model", "tool", "runtime"].includes(prefix) ? prefix : "unknown";
+    return ["stream", "run", "attempt", "loop", "context", "model", "tool", "runtime"].includes(prefix) ? prefix : "unknown";
   }
 
   function inferGenericRole(type) {
@@ -112,17 +123,6 @@
     if (operation === "tool.execute") return "call";
     if (operation === "tool.persisted" || operation === "model.invoke") return "result";
     return "event";
-  }
-
-  function inferHaifaStatus(operation, phase, attributes) {
-    if (phase === "ON_ERROR" || /(^|\.)(error|terminal-error|context-too-long)$/.test(operation)) return "FAILURE";
-    if (attributes.successful === false) return "FAILURE";
-    if (operation === "tool.execute") return "STARTED";
-    if (operation === "loop.iteration") return "ACTIVE";
-    if (attributes.successful === true || ["context.built", "context.forced-rebuild", "model.invoke"].includes(operation)) {
-      return "SUCCESS";
-    }
-    return "UNKNOWN";
   }
 
   function isGenericError(type, status, value) {
@@ -141,6 +141,16 @@
     const attributes = record.attributes;
     const provider = record.provider ? ` · ${record.provider}` : "";
     switch (record.operation) {
+      case "stream.completed":
+        return record.attributes.cleanClose === true ? "Trace stream completed" : "Trace stream incomplete";
+      case "attempt.started":
+        return "Attempt started";
+      case "run.started":
+      case "run.completed":
+      case "run.failed":
+      case "run.cancelled":
+      case "run.timeout":
+        return `${record.operation} · ${record.status.toLowerCase()}`;
       case "loop.iteration":
         return `Iteration ${record.iteration}`;
       case "context.built":
@@ -208,6 +218,10 @@
       stepId: "",
       workerId: "",
       attributes: {},
+      streamId: "",
+      sequence: null,
+      integrity: "NOT_APPLICABLE",
+      issues: [],
       pairLines: [],
       pairStatus: "",
       durationMs: null,
@@ -219,13 +233,15 @@
     const record = baseRecord(value, lineNumber, raw);
     const operation = compact(value.operation, 100) || "unknown";
     const phase = compact(value.phase, 80);
-    const attributes = value.attributes;
+    const attributes = isObject(value.attributes) ? value.attributes : {};
     record.profile = HAIFA_PROFILE;
+    record.streamId = directText(value, "streamId", 140);
+    record.sequence = Number.isInteger(value.sequence) ? value.sequence : null;
     record.operation = operation;
     record.phase = phase;
-    record.rawIteration = value.iteration;
-    record.scope = operation.startsWith("runtime.") ? "RUN/ATTEMPT" : "ITERATION";
-    record.iteration = record.scope === "ITERATION" ? value.iteration : null;
+    record.rawIteration = Number.isInteger(value.iteration) ? value.iteration : null;
+    record.scope = directText(value, "scope", 40);
+    record.iteration = Number.isInteger(value.iteration) ? value.iteration : null;
     record.type = operation;
     record.attributes = attributes;
     record.tool = operation.startsWith("model.") ? compact(attributes.modelId, 100) : compact(attributes.toolName, 100);
@@ -237,13 +253,47 @@
     record.sessionId = directText(value, "sessionId", 140);
     record.stepId = directText(value, "stepId", 140);
     record.workerId = directText(value, "workerId", 140);
-    record.status = inferHaifaStatus(operation, phase, attributes);
+    record.status = directText(value, "status", 40);
     record.family = inferHaifaFamily(operation);
     record.role = inferHaifaRole(operation);
     record.isError = record.status === "FAILURE";
     record.timestampMs = parseTimestamp(value.timestamp);
     record.summary = haifaSummary(record);
+    validateHaifaRecord(record);
     return record;
+  }
+
+  function requireField(record, value, name, predicate) {
+    if (!predicate(value)) record.issues.push(`INVALID_${name.toUpperCase()}`);
+  }
+
+  function validateHaifaRecord(record) {
+    const value = record.value;
+    requireField(record, value.producer, "producer", item => typeof item === "string" && item.length > 0);
+    requireField(record, value.producerVersion, "producerVersion", item => typeof item === "string" && item.length > 0);
+    requireField(record, value.streamId, "streamId", item => typeof item === "string" && /^ts_[A-Za-z0-9_-]{22}$/.test(item));
+    requireField(record, value.sequence, "sequence", item => Number.isInteger(item) && item > 0);
+    requireField(record, value.timestamp, "timestamp", item => typeof item === "string" && parseTimestamp(item) !== null);
+    requireField(record, value.operation, "operation", item => typeof item === "string" && item.length > 0);
+    requireField(record, value.phase, "phase", item => typeof item === "string" && item.length > 0);
+    requireField(record, value.scope, "scope", item => SCOPES.has(item));
+    requireField(record, value.status, "status", item => STATUSES.has(item));
+    requireField(record, value.attributes, "attributes", isObject);
+    if (!KNOWN_OPERATIONS.has(record.operation)) record.issues.push("UNKNOWN_OPERATION");
+    if (record.scope === "STREAM") {
+      if (record.phase !== "NONE") record.issues.push("STREAM_PHASE_MISMATCH");
+    } else {
+      for (const name of ["traceId", "runId", "attemptId", "sessionId"]) {
+        if (typeof value[name] !== "string" || !value[name]) record.issues.push(`MISSING_${name.toUpperCase()}`);
+      }
+      if (["ITERATION", "STEP", "TOOL_CALL"].includes(record.scope) && (!Number.isInteger(value.iteration) || value.iteration < 1)) {
+        record.issues.push("INVALID_ITERATION");
+      }
+      if (["STEP", "TOOL_CALL"].includes(record.scope) && (typeof value.stepId !== "string" || !value.stepId)) record.issues.push("MISSING_STEPID");
+      if (record.scope === "TOOL_CALL" && (typeof value.toolCallId !== "string" || !value.toolCallId)) record.issues.push("MISSING_TOOLCALLID");
+    }
+    record.integrity = record.issues.length ? "CONTRACT_WARNING" : "VALID";
+    record.searchText = `${record.searchText} ${record.issues.join(" ")}`.toLowerCase();
   }
 
   function normalizeGenericRecord(value, lineNumber, raw) {
@@ -266,6 +316,12 @@
     record.family = inferGenericFamily(type, tool);
     record.role = inferGenericRole(type);
     record.isError = isGenericError(type, status, value);
+    if (resemblesHaifaTrace(value)) {
+      record.integrity = "UNSUPPORTED_SCHEMA";
+      record.issues.push("UNKNOWN_SCHEMA");
+      record.isError = true;
+      record.searchText = `${record.searchText} unknown_schema`;
+    }
     return record;
   }
 
@@ -310,7 +366,7 @@
       }
       for (const record of group) {
         if (record.profile === HAIFA_PROFILE) record.summary = haifaSummary(record);
-        record.searchText = `${record.raw} ${record.tool} ${record.provider} ${record.pairStatus}`.toLowerCase();
+        record.searchText = `${record.raw} ${record.tool} ${record.provider} ${record.pairStatus} ${record.issues.join(" ")}`.toLowerCase();
       }
     }
   }
@@ -343,8 +399,54 @@
         records.push(invalidRecord(raw, lineNumber, error));
       }
     });
+    validateStreams(records);
+    const groupOrder = new Map();
+    for (const record of records) {
+      const key = record.profile === HAIFA_PROFILE ? `stream:${record.streamId}` : `line:${record.lineNumber}`;
+      record.sortGroup = key;
+      if (!groupOrder.has(key)) groupOrder.set(key, groupOrder.size);
+    }
+    records.sort((left, right) => groupOrder.get(left.sortGroup) - groupOrder.get(right.sortGroup)
+      || (left.profile === HAIFA_PROFILE ? left.sequence - right.sequence : left.lineNumber - right.lineNumber)
+      || left.lineNumber - right.lineNumber);
     correlateCalls(records);
     return records;
+  }
+
+  function validateStreams(records) {
+    const streams = new Map();
+    for (const record of records) {
+      if (record.profile !== HAIFA_PROFILE || !record.streamId || record.sequence === null) continue;
+      if (!streams.has(record.streamId)) streams.set(record.streamId, []);
+      streams.get(record.streamId).push(record);
+    }
+    for (const group of streams.values()) {
+      const seen = new Set();
+      let previous = 0;
+      for (const record of group) {
+        if (seen.has(record.sequence)) record.issues.push("DUPLICATE_SEQUENCE");
+        if (record.sequence <= previous) record.issues.push("OUT_OF_ORDER_SEQUENCE");
+        if (record.sequence > previous + 1) record.issues.push("SEQUENCE_GAP");
+        seen.add(record.sequence);
+        previous = Math.max(previous, record.sequence);
+      }
+      const completions = group.filter(record => record.operation === "stream.completed");
+      const completion = completions.length === 1 ? completions[0] : null;
+      const sequenceHealthy = group.every(record => !record.issues.some(issue => ["DUPLICATE_SEQUENCE", "OUT_OF_ORDER_SEQUENCE", "SEQUENCE_GAP", "INVALID_SEQUENCE"].includes(issue)));
+      const clean = sequenceHealthy && completion
+        && completion === group[group.length - 1]
+        && completion.value.attributes?.cleanClose === true
+        && completion.value.attributes?.droppedEvents === 0
+        && completion.value.attributes?.writtenEvents === group.length;
+      if (!clean) {
+        for (const record of group) record.issues.push("TRACE_INCOMPLETE");
+      }
+      for (const record of group) {
+        record.issues = [...new Set(record.issues)];
+        record.integrity = record.issues.length ? "TRACE_INCOMPLETE" : "VALID";
+        record.searchText = `${record.searchText} ${record.issues.join(" ")}`.toLowerCase();
+      }
+    }
   }
 
   return {

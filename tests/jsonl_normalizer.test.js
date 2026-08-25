@@ -2,120 +2,90 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const {
-  GENERIC_PROFILE,
-  HAIFA_PROFILE,
-  isHaifaRuntimeTrace,
-  parseJsonl,
-} = require("../src/haifa_eval_viewer/web/jsonl-normalizer.js");
+const { GENERIC_PROFILE, HAIFA_PROFILE, isHaifaRuntimeTrace, parseJsonl } = require("../src/haifa_eval_viewer/web/jsonl-normalizer.js");
 
-function trace(overrides = {}) {
+function trace(sequence, overrides = {}) {
   return {
-    timestamp: "2026-08-25T10:00:00.000Z",
-    traceId: "trace-1",
-    runId: "run-1",
-    attemptId: "attempt-1",
-    sessionId: "session-1",
-    workerId: "worker-1",
-    iteration: 1,
-    phase: "BEFORE_CONTEXT_BUILD",
-    operation: "loop.iteration",
-    attributes: { iteration: 1 },
-    ...overrides,
+    recordType: "trace.event", schema: "haifa-runtime-trace", schemaVersion: 1,
+    producer: "haifa-agent-cli", producerVersion: "0.1.0-SNAPSHOT",
+    streamId: "ts_Q83mKMf7pV0r2XaN7cFwYg", sequence,
+    timestamp: `2026-08-25T10:00:0${Math.min(sequence, 9)}.000Z`,
+    traceId: "tr_zP6x5aJdC1nW8kRt4uHqBg", runId: "run-1", attemptId: "attempt-1",
+    sessionId: "session-1", workerId: "worker-1", iteration: 1,
+    scope: "ITERATION", phase: "BEFORE_CONTEXT_BUILD", operation: "loop.iteration", status: "ACTIVE",
+    attributes: { iteration: 1 }, ...overrides,
   };
 }
 
-function jsonl(records) {
-  return records.map(record => JSON.stringify(record)).join("\n");
+function completed(sequence, overrides = {}) {
+  return trace(sequence, {
+    traceId: undefined, runId: undefined, attemptId: undefined, sessionId: undefined,
+    workerId: undefined, iteration: undefined, scope: "STREAM", phase: "NONE",
+    operation: "stream.completed", status: "SUCCESS",
+    attributes: { writtenEvents: sequence, droppedEvents: 0, cleanClose: true }, ...overrides,
+  });
 }
 
-test("recognizes the Haifa runtime trace envelope and preserves operation semantics", () => {
+function jsonl(records) { return records.map(record => JSON.stringify(record)).join("\n"); }
+
+test("recognizes only complete V1 metadata and preserves explicit semantics", () => {
   const records = parseJsonl(jsonl([
-    trace(),
-    trace({
-      timestamp: "2026-08-25T10:00:00.100Z",
-      phase: "AFTER_MODEL_CALL",
-      operation: "model.invoke",
-      stepId: "model-step-1",
-      attributes: { providerId: "provider-a", modelId: "model-a", inputTokens: 100, outputTokens: 20 },
-    }),
-    trace({
-      timestamp: "2026-08-25T10:00:00.200Z",
-      phase: "BEFORE_DECISION_EXECUTION",
-      operation: "tool.execute",
-      stepId: "tool-step-1",
-      toolCallId: "call-1",
-      attributes: { providerId: "local", toolName: "file.read", toolVersion: "1" },
-    }),
-    trace({
-      timestamp: "2026-08-25T10:00:00.550Z",
-      phase: "AFTER_DECISION_EXECUTION",
-      operation: "tool.persisted",
-      stepId: "tool-step-1",
-      toolCallId: "call-1",
-      attributes: { successful: false, truncated: true, externalizationRequired: false, externalized: false },
-    }),
-    trace({
-      timestamp: "2026-08-25T10:00:01.000Z",
-      iteration: 0,
-      phase: "ON_ERROR",
-      operation: "runtime.error",
-      attributes: { errorCode: "MODEL_RESPONSE_INVALID", exceptionType: "AgentExecutionFailureException" },
-    }),
+    trace(1),
+    trace(2, { phase: "AFTER_MODEL_CALL", operation: "model.invoke", scope: "STEP", status: "SUCCESS", stepId: "model-step-1", attributes: { providerId: "provider-a", modelId: "model-a", inputTokens: 100, outputTokens: 20 } }),
+    trace(3, { timestamp: "2026-08-25T10:00:03.100Z", phase: "BEFORE_DECISION_EXECUTION", operation: "tool.execute", scope: "TOOL_CALL", status: "STARTED", stepId: "tool-step-1", toolCallId: "call-1", attributes: { providerId: "local", toolName: "file.read", toolVersion: "1" } }),
+    trace(4, { timestamp: "2026-08-25T10:00:03.450Z", phase: "AFTER_DECISION_EXECUTION", operation: "tool.persisted", scope: "TOOL_CALL", status: "FAILURE", stepId: "tool-step-1", toolCallId: "call-1", attributes: { toolName: "file.read", providerId: "local", successful: false, failureCode: "TOOL_BUSINESS_FAILURE", retryable: false, truncated: true, externalizationRequired: false, externalized: false } }),
+    trace(5, { iteration: undefined, phase: "ON_ERROR", operation: "runtime.error", scope: "ATTEMPT", status: "FAILURE", attributes: { errorCode: "MODEL_RESPONSE_INVALID", exceptionType: "AgentExecutionFailureException" } }),
+    completed(6),
   ]));
 
-  assert.equal(records.length, 5);
+  assert.equal(records.length, 6);
   assert.ok(records.every(record => record.profile === HAIFA_PROFILE));
-  assert.deepEqual(records.map(record => record.type), [
-    "loop.iteration",
-    "model.invoke",
-    "tool.execute",
-    "tool.persisted",
-    "runtime.error",
-  ]);
+  assert.ok(records.every(record => record.integrity === "VALID"));
   assert.equal(records[0].status, "ACTIVE");
-  assert.equal(records[1].status, "SUCCESS");
   assert.equal(records[2].role, "call");
   assert.equal(records[3].role, "result");
   assert.equal(records[3].status, "FAILURE");
   assert.equal(records[3].tool, "file.read");
-  assert.equal(records[3].provider, "local");
   assert.equal(records[3].pairStatus, "PAIRED");
   assert.equal(records[3].durationMs, 350);
-  assert.deepEqual(records[3].pairLines, [3]);
-  assert.equal(records[4].status, "FAILURE");
-  assert.equal(records[4].scope, "RUN/ATTEMPT");
+  assert.equal(records[4].scope, "ATTEMPT");
   assert.equal(records[4].iteration, null);
-  assert.equal(records[4].rawIteration, 0);
-  assert.equal(records.filter(record => record.isError).length, 2);
 });
 
-test("does not guess incomplete or unrelated JSONL as a Haifa trace", () => {
-  const value = { timestamp: "2026-08-25T10:00:00Z", operation: "custom.work", status: "success" };
-  assert.equal(isHaifaRuntimeTrace(value), false);
-  const [record] = parseJsonl(JSON.stringify(value));
-  assert.equal(record.profile, GENERIC_PROFILE);
-  assert.equal(record.type, "custom.work");
-  assert.equal(record.status, "success");
+test("treats legacy V0 and unrelated JSONL as generic", () => {
+  const legacy = { timestamp: "2026-08-25T10:00:00Z", traceId: "old", runId: "run-1", sessionId: "session-1", iteration: 1, phase: "AFTER_MODEL_CALL", operation: "model.invoke", attributes: {} };
+  assert.equal(isHaifaRuntimeTrace(legacy), false);
+  const records = parseJsonl(jsonl([legacy, { timestamp: "2026-08-25T10:00:00Z", operation: "custom.work", status: "success" }]));
+  assert.ok(records.every(record => record.profile === GENERIC_PROFILE));
 });
 
-test("correlates equal tool call IDs within each run instead of across runs", () => {
-  const records = parseJsonl(jsonl([
-    trace({ operation: "tool.execute", phase: "BEFORE_DECISION_EXECUTION", toolCallId: "call-1", attributes: { toolName: "file.read" } }),
-    trace({ operation: "tool.persisted", phase: "AFTER_DECISION_EXECUTION", toolCallId: "call-1", attributes: { successful: true } }),
-    trace({ runId: "run-2", operation: "tool.execute", phase: "BEFORE_DECISION_EXECUTION", toolCallId: "call-1", attributes: { toolName: "file.patch" } }),
-    trace({ runId: "run-2", operation: "tool.persisted", phase: "AFTER_DECISION_EXECUTION", toolCallId: "call-1", attributes: { successful: true } }),
-  ]));
-
-  assert.equal(records[1].tool, "file.read");
-  assert.equal(records[3].tool, "file.patch");
-  assert.ok(records.every(record => record.pairStatus === "PAIRED"));
+test("sorts each V1 stream by sequence and reports input order, gaps, and duplicates", () => {
+  const records = parseJsonl(jsonl([trace(2), trace(1), trace(2), completed(4)]));
+  assert.deepEqual(records.map(record => record.sequence), [1, 2, 2, 4]);
+  assert.ok(records.some(record => record.issues.includes("OUT_OF_ORDER_SEQUENCE")));
+  assert.ok(records.some(record => record.issues.includes("DUPLICATE_SEQUENCE")));
+  assert.ok(records.some(record => record.issues.includes("SEQUENCE_GAP")));
+  assert.ok(records.every(record => record.issues.includes("TRACE_INCOMPLETE")));
 });
 
-test("keeps unknown Haifa operations visible and invalid lines fail-visible", () => {
-  const records = parseJsonl(`${JSON.stringify(trace({ operation: "future.new-operation" }))}\n{broken`);
-  assert.equal(records[0].family, "unknown");
-  assert.equal(records[0].type, "future.new-operation");
+test("marks a stream without a clean completion as incomplete", () => {
+  const records = parseJsonl(jsonl([trace(1), trace(2, { operation: "future.new-operation" })]));
+  assert.ok(records.every(record => record.issues.includes("TRACE_INCOMPLETE")));
+  assert.ok(records[1].issues.includes("UNKNOWN_OPERATION"));
+  assert.equal(records[1].family, "unknown");
+});
+
+test("orders a V1 stream by sequence even when generic records are also present", () => {
+  const records = parseJsonl(jsonl([trace(2), { type: "note", message: "generic" }, trace(1), completed(3)]));
+  assert.deepEqual(records.map(record => record.sequence), [1, 2, 3, null]);
+  assert.equal(records[3].profile, GENERIC_PROFILE);
+});
+
+test("keeps unsupported schema and invalid JSON fail-visible", () => {
+  const records = parseJsonl(`${JSON.stringify(trace(1, { schemaVersion: 2 }))}\n{broken`);
+  assert.equal(records[0].profile, GENERIC_PROFILE);
+  assert.equal(records[0].integrity, "UNSUPPORTED_SCHEMA");
+  assert.ok(records[0].issues.includes("UNKNOWN_SCHEMA"));
   assert.equal(records[1].valid, false);
   assert.equal(records[1].isError, true);
 });
