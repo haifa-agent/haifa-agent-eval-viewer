@@ -1,0 +1,29 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "haifa-eval-viewer"
+version = "0.1.0.dev0"
+description = "Read-only Coding Agent evaluation trajectory viewer"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "Apache-2.0"
+authors = [{ name = "Haifa Agent" }]
+dependencies = []
+
+[dependency-groups]
+dev = ["ruff>=0.12,<1"]
+
+[project.scripts]
+haifa-eval-viewer = "haifa_eval_viewer.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/haifa_eval_viewer"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]

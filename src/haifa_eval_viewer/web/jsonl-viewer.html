@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <meta name="referrer" content="no-referrer">
+    <title>JSONL Viewer · Haifa Eval Viewer</title>
+    <link rel="stylesheet" href="jsonl-viewer.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="index.html" aria-label="返回 Haifa Eval Viewer">
+        <span class="brand-mark">H</span>
+        <span><strong>JSONL Viewer</strong><small>Local event explorer</small></span>
+      </a>
+      <div class="privacy-status"><span class="status-dot"></span><span>仅在浏览器本地解析 · 不上传</span></div>
+    </header>
+
+    <main>
+      <section class="hero">
+        <div>
+          <div class="eyebrow">Standalone utility</div>
+          <h1>把复杂 JSONL<br>变成可读事件。</h1>
+          <p>打开或粘贴任意 JSONL，逐行解析并查看时间线、字段分布、JSON 树和原始行。自动识别 Haifa Runtime Trace，内容始终留在当前浏览器标签页。</p>
+        </div>
+        <div class="hero-note">
+          <strong>Ctrl / ⌘ + Enter</strong>
+          <span>解析当前内容</span>
+        </div>
+      </section>
+
+      <section class="input-panel">
+        <div class="panel-heading">
+          <div><span class="section-index">01</span><h2>打开或粘贴 JSONL</h2></div>
+          <span id="input-meta" class="muted">等待输入</span>
+        </div>
+        <textarea id="jsonl-input" spellcheck="false" autocomplete="off" aria-label="JSONL 内容" placeholder='每行一个 JSON 对象，例如：
+{"timestamp":"2026-08-22T10:01:02Z","type":"model.request","model":"deepseek"}
+{"timestamp":"2026-08-22T10:01:05Z","type":"tool.call","tool":"shell","call_id":"call-1"}'></textarea>
+        <div class="input-actions">
+          <button id="parse-button" class="button primary" type="button">粘贴并解析</button>
+          <button id="open-file-button" class="button" type="button">打开本地文件</button>
+          <input id="file-input" type="file" accept=".jsonl,.ndjson,.json,application/json,application/x-ndjson,text/plain" hidden>
+          <button id="sample-button" class="button" type="button">载入 Haifa 示例</button>
+          <button id="clear-button" class="button ghost" type="button">清空</button>
+          <span class="local-note">内容不会写入 LocalStorage、Cookie 或网络请求</span>
+        </div>
+      </section>
+
+      <section id="results" class="results" hidden>
+        <div class="panel-heading results-heading">
+          <div><span class="section-index">02</span><h2>解析结果</h2></div>
+          <div class="result-statuses"><span id="source-profile" class="profile-pill">Generic JSONL</span><span id="parse-status" class="status-pill">READY</span></div>
+        </div>
+
+        <div class="stat-grid" aria-label="解析概要">
+          <div class="stat-card"><span>总行数</span><strong id="stat-lines">0</strong></div>
+          <div class="stat-card success"><span>有效 JSON</span><strong id="stat-valid">0</strong></div>
+          <div class="stat-card danger"><span>无效行</span><strong id="stat-invalid">0</strong></div>
+          <div class="stat-card"><span>事件类型</span><strong id="stat-types">0</strong></div>
+          <div class="stat-card"><span>Iterations</span><strong id="stat-iterations">0</strong></div>
+          <div class="stat-card"><span>Model Calls</span><strong id="stat-models">0</strong></div>
+          <div class="stat-card"><span>Tool Calls</span><strong id="stat-tools">0</strong></div>
+          <div class="stat-card danger"><span>Failures</span><strong id="stat-failures">0</strong></div>
+          <div class="stat-card"><span>时间跨度</span><strong id="stat-duration">—</strong></div>
+        </div>
+
+        <div class="viewer-shell">
+          <div class="viewer-toolbar">
+            <div class="tabs" role="tablist" aria-label="JSONL 视图">
+              <button class="tab active" type="button" data-tab="timeline" role="tab">事件时间线</button>
+              <button class="tab" type="button" data-tab="fields" role="tab">字段统计</button>
+              <button class="tab" type="button" data-tab="tree" role="tab">JSON 树</button>
+              <button class="tab" type="button" data-tab="raw" role="tab">原始行</button>
+            </div>
+            <div class="filters">
+              <select id="type-filter" aria-label="按事件类型筛选"><option value="">类型：全部</option></select>
+              <select id="tool-filter" aria-label="按工具筛选"><option value="">Tool：全部</option></select>
+              <select id="phase-filter" aria-label="按运行阶段筛选"><option value="">Phase：全部</option></select>
+              <select id="iteration-filter" aria-label="按迭代轮次筛选"><option value="">Iteration：全部</option></select>
+              <label class="search-field"><span>⌕</span><input id="search-filter" type="search" placeholder="关键词或字段值" aria-label="搜索 JSONL"></label>
+              <label class="check-filter"><input id="error-filter" type="checkbox">仅异常</label>
+              <button id="reset-filter" class="mini-button" type="button">重置</button>
+            </div>
+            <div id="filter-summary" class="filter-summary">0 / 0 行</div>
+          </div>
+
+          <section id="timeline-view" class="view active" role="tabpanel">
+            <div class="timeline-column">
+              <div id="event-list" class="event-list"></div>
+              <button id="load-more" class="load-more" type="button" hidden>显示更多</button>
+            </div>
+            <aside id="event-detail" class="event-detail"></aside>
+          </section>
+
+          <section id="fields-view" class="view" role="tabpanel">
+            <div class="distribution-grid">
+              <article class="distribution-panel"><h3>事件类型</h3><div id="type-distribution" class="bar-list"></div></article>
+              <article class="distribution-panel"><h3>Tool</h3><div id="tool-distribution" class="bar-list"></div></article>
+            </div>
+            <article class="field-table-panel">
+              <div class="subheading"><h3>字段出现频率</h3><span>扫描对象层级最多 6 层</span></div>
+              <div class="table-scroll"><table><thead><tr><th>JSON Path</th><th>出现行数</th><th>覆盖率</th><th>常见类型</th></tr></thead><tbody id="field-table"></tbody></table></div>
+            </article>
+          </section>
+
+          <section id="tree-view" class="view" role="tabpanel">
+            <div class="tree-heading">
+              <div><span id="tree-line" class="line-label">LINE —</span><h3 id="tree-title">选择一条有效 JSON</h3></div>
+              <button id="copy-json" class="button" type="button">复制 JSON</button>
+            </div>
+            <div id="json-tree" class="json-tree"></div>
+          </section>
+
+          <section id="raw-view" class="view" role="tabpanel">
+            <div id="raw-lines" class="raw-lines"></div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="jsonl-normalizer.js" defer></script>
+    <script src="jsonl-viewer.js" defer></script>
+  </body>
+</html>

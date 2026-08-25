@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Haifa Eval Viewer</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="app-header">
+      <a class="brand" href="#/" aria-label="Haifa Eval Viewer home">
+        <span class="brand-mark">H</span>
+        <span><strong>Haifa Eval Viewer</strong><small>Coding Agent trajectory analysis</small></span>
+      </a>
+      <div class="header-tools">
+        <a class="header-link" href="jsonl-viewer.html">JSONL Viewer</a>
+        <div class="header-status"><span class="live-dot"></span><span>Read-only evidence</span></div>
+      </div>
+    </header>
+    <main id="app" tabindex="-1">
+      <div class="loading-panel">Loading evaluation catalog…</div>
+    </main>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
