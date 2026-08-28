@@ -10,6 +10,7 @@ const state = {
   activeTab: "timeline",
   displayLimit: PAGE_SIZE,
   sourceName: "",
+  collapsedTreeNodes: new Set(),
 };
 
 const elements = {
@@ -29,6 +30,8 @@ const elements = {
   filterSummary: document.querySelector("#filter-summary"),
   eventList: document.querySelector("#event-list"),
   eventDetail: document.querySelector("#event-detail"),
+  callTree: document.querySelector("#call-tree"),
+  hierarchyDetail: document.querySelector("#hierarchy-detail"),
   loadMore: document.querySelector("#load-more"),
   typeDistribution: document.querySelector("#type-distribution"),
   toolDistribution: document.querySelector("#tool-distribution"),
@@ -117,6 +120,7 @@ function parseCurrentInput() {
   const text = elements.input.value;
   state.records = parseJsonl(text);
   state.displayLimit = PAGE_SIZE;
+  state.collapsedTreeNodes.clear();
   state.selectedId = state.records.find(record => record.valid)?.id || state.records[0]?.id || null;
   elements.results.hidden = false;
   populateSelect(elements.typeFilter, "类型", countBy(state.records, "type"));
@@ -179,6 +183,7 @@ function applyFilters() {
   renderFields();
   renderTree();
   renderRaw();
+  renderHierarchy();
 }
 
 function selectedRecord() {
@@ -260,13 +265,13 @@ function detailField(label, value) {
   return wrapper;
 }
 
-function renderDetail(record) {
-  elements.eventDetail.replaceChildren();
+function renderDetail(record, host = elements.eventDetail) {
+  host.replaceChildren();
   if (!record) {
     const empty = document.createElement("div");
     empty.className = "empty-detail";
     empty.textContent = "选择一条事件查看完整内容。";
-    elements.eventDetail.append(empty);
+    host.append(empty);
     return;
   }
   const kicker = document.createElement("div");
@@ -286,6 +291,9 @@ function renderDetail(record) {
     detailField("Phase", record.phase),
     detailField("Iteration", record.iteration === null ? "" : String(record.iteration)),
     detailField("Status", record.status),
+    detailField("Lifecycle", record.lifecycle),
+    detailField("Outcome", record.outcome),
+    detailField("Trace version", record.traceVersion === null ? "" : `V${record.traceVersion}`),
     detailField("Integrity", record.integrity),
     detailField("Issues", record.issues.join(", ")),
     detailField("Stream ID", record.streamId),
@@ -321,12 +329,12 @@ function renderDetail(record) {
   const preview = document.createElement("pre");
   preview.className = "raw-preview";
   preview.textContent = record.valid ? JSON.stringify(record.value, null, 2) : record.raw;
-  elements.eventDetail.append(kicker, title, summary, grid, actions, preview);
+  host.append(kicker, title, summary, grid, actions, preview);
   if (!record.valid) {
     const error = document.createElement("div");
     error.className = "parse-error";
     error.textContent = record.parseError;
-    elements.eventDetail.append(error);
+    host.append(error);
   }
 }
 
@@ -519,6 +527,170 @@ function renderTree() {
   elements.jsonTree.append(treeNode(record.value, null, 0, { remaining: 4000 }));
 }
 
+function shortId(value) {
+  const text = String(value || "");
+  return text.length > 13 ? `${text.slice(0, 8)}…${text.slice(-4)}` : text || "—";
+}
+
+function makeTreeNode(kind, key, title) {
+  return { kind, key, title, records: [], children: [], lookup: new Map() };
+}
+
+function childNode(parent, kind, key, title) {
+  const mapKey = `${kind}:${key}`;
+  if (!parent.lookup.has(mapKey)) {
+    const node = makeTreeNode(kind, key, title);
+    parent.lookup.set(mapKey, node);
+    parent.children.push(node);
+  }
+  return parent.lookup.get(mapKey);
+}
+
+function haifaIterationNode(root, record) {
+  const run = childNode(root, "RUN", record.runId || record.id, `Run ${shortId(record.runId)}`);
+  const attemptKey = record.attemptId || record.runId || record.id;
+  const attempt = childNode(run, "ATTEMPT", attemptKey, `Attempt ${shortId(record.attemptId)}`);
+  const iterationKey = `${attemptKey}#${record.iteration ?? "?"}`;
+  return childNode(attempt, "ITERATION", iterationKey, `Iteration ${record.iteration ?? "?"}`);
+}
+
+function buildCallTree(records) {
+  const valid = records.filter(record => record.valid);
+  const haifa = valid.filter(record => record.profile === HAIFA_PROFILE);
+  const root = makeTreeNode("ROOT", "", "");
+  if (!haifa.length) {
+    for (const record of valid) {
+      childNode(root, "GROUP", record.family || "event", (record.family || "event").toUpperCase()).records.push(record);
+    }
+    return root;
+  }
+  const sorted = [...haifa].sort((left, right) => (left.sequence ?? left.lineNumber) - (right.sequence ?? right.lineNumber));
+  const stepNodes = new Map();
+  for (const record of sorted) {
+    switch (record.scope) {
+      case "RUN":
+        childNode(root, "RUN", record.runId || record.id, `Run ${shortId(record.runId)}`).records.push(record);
+        break;
+      case "ATTEMPT": {
+        const run = childNode(root, "RUN", record.runId || record.id, `Run ${shortId(record.runId)}`);
+        childNode(run, "ATTEMPT", record.attemptId || record.id, `Attempt ${shortId(record.attemptId)}`).records.push(record);
+        break;
+      }
+      case "ITERATION":
+        haifaIterationNode(root, record).records.push(record);
+        break;
+      case "STEP": {
+        const iteration = haifaIterationNode(root, record);
+        const step = childNode(iteration, "STEP", record.stepId || record.id, record.tool ? `Model ${record.tool}` : `Step ${shortId(record.stepId)}`);
+        stepNodes.set(record.stepId, step);
+        step.records.push(record);
+        break;
+      }
+      case "TOOL_CALL": {
+        const parent = stepNodes.get(record.stepId) || haifaIterationNode(root, record);
+        childNode(parent, "TOOL_CALL", record.toolCallId || record.id, `Tool ${record.tool || shortId(record.toolCallId)}`).records.push(record);
+        break;
+      }
+      default:
+        root.records.push(record);
+    }
+  }
+  return root;
+}
+
+function subtreeStats(node) {
+  let count = node.records.length;
+  let errors = node.records.filter(record => record.isError).length;
+  const stamps = node.records.map(record => record.timestampMs).filter(value => value !== null);
+  for (const child of node.children) {
+    const nested = subtreeStats(child);
+    count += nested.count;
+    errors += nested.errors;
+    stamps.push(...nested.stamps);
+  }
+  return {
+    count,
+    errors,
+    stamps,
+    durationMs: stamps.length > 1 ? Math.max(...stamps) - Math.min(...stamps) : null,
+  };
+}
+
+function treeLeaf(record, first) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `tree-leaf${record.id === state.selectedId ? " selected" : ""}${record.isError ? " error" : ""}${record.valid ? "" : " invalid"}`;
+  button.dataset.recordId = record.id;
+  const line = document.createElement("span");
+  line.className = "event-line";
+  line.textContent = formatEventTime(record, first);
+  if (record.timestampMs !== null) line.title = new Date(record.timestampMs).toISOString();
+  const icon = document.createElement("span");
+  icon.className = "event-icon";
+  icon.textContent = eventIcon(record);
+  const main = document.createElement("span");
+  main.className = "event-main";
+  const topline = document.createElement("span");
+  topline.className = "event-topline";
+  const strong = document.createElement("strong");
+  strong.textContent = record.type;
+  topline.append(strong);
+  if (record.status) topline.append(tag(record.status));
+  if (record.issues.length) topline.append(tag(record.issues.join(", "), "warning"));
+  const summary = document.createElement("span");
+  summary.textContent = record.valid ? record.summary || "没有可推断的摘要" : record.parseError;
+  main.append(topline, summary);
+  button.append(line, icon, main);
+  button.addEventListener("click", () => {
+    state.selectedId = record.id;
+    renderHierarchy();
+  });
+  return button;
+}
+
+function renderTreeNode(node, first, parentPath) {
+  const nodeKey = `${parentPath}/${node.kind}:${node.key}`;
+  const details = document.createElement("details");
+  details.className = "tree-group";
+  details.dataset.nodeKey = nodeKey;
+  details.open = !state.collapsedTreeNodes.has(nodeKey);
+  details.addEventListener("toggle", () => {
+    if (details.open) state.collapsedTreeNodes.delete(nodeKey);
+    else state.collapsedTreeNodes.add(nodeKey);
+  });
+  const stats = subtreeStats(node);
+  if (stats.errors) details.classList.add("error");
+  const summary = document.createElement("summary");
+  const caret = document.createElement("span");
+  caret.className = "tree-caret";
+  caret.textContent = "▸";
+  const title = document.createElement("strong");
+  title.textContent = node.title;
+  summary.append(caret, title, tag(node.kind, "phase"), tag(`${stats.count} 事件`));
+  if (stats.durationMs !== null) summary.append(tag(formatDuration(stats.durationMs), "iteration"));
+  if (stats.errors) summary.append(tag(`${stats.errors} 失败`, "warning"));
+  details.append(summary);
+  for (const record of node.records) details.append(treeLeaf(record, first));
+  for (const child of node.children) details.append(renderTreeNode(child, first, nodeKey));
+  return details;
+}
+
+function renderHierarchy() {
+  elements.callTree.replaceChildren();
+  if (!state.filtered.length) {
+    elements.callTree.append(emptyState("没有记录符合当前筛选条件。"));
+    renderDetail(null, elements.hierarchyDetail);
+    return;
+  }
+  const first = firstTimestamp(state.filtered);
+  const root = buildCallTree(state.filtered);
+  const fragment = document.createDocumentFragment();
+  for (const record of root.records) fragment.append(treeLeaf(record, first));
+  for (const child of root.children) fragment.append(renderTreeNode(child, first, ""));
+  elements.callTree.append(fragment);
+  renderDetail(selectedRecord(), elements.hierarchyDetail);
+}
+
 function renderRaw() {
   elements.rawLines.replaceChildren();
   if (!state.filtered.length) {
@@ -551,6 +723,7 @@ function activateTab(name) {
     tab.setAttribute("aria-selected", String(active));
   });
   document.querySelectorAll(".view").forEach(view => view.classList.toggle("active", view.id === `${name}-view`));
+  if (name === "hierarchy") renderHierarchy();
   if (name === "tree") renderTree();
   if (name === "raw") renderRaw();
 }
@@ -667,6 +840,16 @@ elements.loadMore.addEventListener("click", () => {
 document.querySelector("#copy-json").addEventListener("click", () => {
   const record = selectedRecord();
   if (record) copyText(record.valid ? JSON.stringify(record.value, null, 2) : record.raw);
+});
+document.querySelector("#tree-expand-all").addEventListener("click", () => {
+  state.collapsedTreeNodes.clear();
+  elements.callTree.querySelectorAll("details").forEach(details => { details.open = true; });
+});
+document.querySelector("#tree-collapse-all").addEventListener("click", () => {
+  elements.callTree.querySelectorAll("details").forEach(details => {
+    state.collapsedTreeNodes.add(details.dataset.nodeKey);
+    details.open = false;
+  });
 });
 
 updateInputMeta();

@@ -70,6 +70,7 @@
           <div class="viewer-toolbar">
             <div class="tabs" role="tablist" aria-label="JSONL 视图">
               <button class="tab active" type="button" data-tab="timeline" role="tab">事件时间线</button>
+              <button class="tab" type="button" data-tab="hierarchy" role="tab">调用树</button>
               <button class="tab" type="button" data-tab="fields" role="tab">字段统计</button>
               <button class="tab" type="button" data-tab="tree" role="tab">JSON 树</button>
               <button class="tab" type="button" data-tab="raw" role="tab">原始行</button>
@@ -92,6 +93,20 @@
               <button id="load-more" class="load-more" type="button" hidden>显示更多</button>
             </div>
             <aside id="event-detail" class="event-detail"></aside>
+          </section>
+
+          <section id="hierarchy-view" class="view" role="tabpanel">
+            <div class="hierarchy-toolbar">
+              <span class="muted">Run → Attempt → Iteration → Step → Tool Call 层级递进 · 点击节点查看详情</span>
+              <div class="hierarchy-actions">
+                <button id="tree-expand-all" class="mini-button" type="button">全部展开</button>
+                <button id="tree-collapse-all" class="mini-button" type="button">全部收起</button>
+              </div>
+            </div>
+            <div class="hierarchy-layout">
+              <div id="call-tree" class="call-tree"></div>
+              <aside id="hierarchy-detail" class="event-detail"></aside>
+            </div>
           </section>
 
           <section id="fields-view" class="view" role="tabpanel">

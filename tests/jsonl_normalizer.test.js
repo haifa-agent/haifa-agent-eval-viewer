@@ -82,10 +82,63 @@ test("orders a V1 stream by sequence even when generic records are also present"
 });
 
 test("keeps unsupported schema and invalid JSON fail-visible", () => {
-  const records = parseJsonl(`${JSON.stringify(trace(1, { schemaVersion: 2 }))}\n{broken`);
+  const records = parseJsonl(`${JSON.stringify(trace(1, { schemaVersion: 3 }))}\n{broken`);
   assert.equal(records[0].profile, GENERIC_PROFILE);
   assert.equal(records[0].integrity, "UNSUPPORTED_SCHEMA");
   assert.ok(records[0].issues.includes("UNKNOWN_SCHEMA"));
   assert.equal(records[1].valid, false);
   assert.equal(records[1].isError, true);
+});
+
+function traceV2(sequence, overrides = {}) {
+  return {
+    recordType: "trace.event", schema: "haifa-runtime-trace", schemaVersion: 2,
+    producer: "haifa-agent-cli", producerVersion: "0.1.0-SNAPSHOT",
+    streamId: "ts_Q83mKMf7pV0r2XaN7cFwYg", sequence,
+    timestampMs: 1787522400000 + sequence * 1000,
+    traceId: "tr_zP6x5aJdC1nW8kRt4uHqBg", runId: "run-1", attemptId: "attempt-1",
+    sessionId: "session-1", workerId: "worker-1", iteration: 1,
+    scope: "ITERATION", phase: "BEFORE_CONTEXT_BUILD", operation: "loop.iteration",
+    lifecycle: "ACTIVE",
+    attributes: { iteration: 1 }, ...overrides,
+  };
+}
+
+function completedV2(sequence, overrides = {}) {
+  return traceV2(sequence, {
+    traceId: undefined, runId: undefined, attemptId: undefined, sessionId: undefined,
+    workerId: undefined, iteration: undefined, scope: "STREAM", phase: "NONE",
+    operation: "stream.completed", lifecycle: "COMPLETED", outcome: "SUCCESS",
+    attributes: { writtenEventCount: sequence, droppedEventCount: 0, cleanClose: true }, ...overrides,
+  });
+}
+
+test("recognizes V2 lifecycle/outcome envelope and renamed attributes", () => {
+  const records = parseJsonl(jsonl([
+    traceV2(1, { phase: "AFTER_CONTEXT_BUILD", operation: "context.built", lifecycle: "COMPLETED", outcome: "SUCCESS", attributes: { estimatedInputTokens: 900, selectedItemCount: 7, summarySourceDigest: "sha256:abc" } }),
+    traceV2(2, { phase: "BEFORE_DECISION_EXECUTION", operation: "tool.execute", scope: "TOOL_CALL", lifecycle: "STARTED", stepId: "tool-step-1", toolCallId: "call-1", attributes: { providerId: "local", toolName: "file.read", toolDefinitionDigest: "abc123" } }),
+    traceV2(3, { phase: "AFTER_DECISION_EXECUTION", operation: "tool.persisted", scope: "TOOL_CALL", lifecycle: "COMPLETED", outcome: "FAILURE", stepId: "tool-step-1", toolCallId: "call-1", attributes: { toolName: "file.read", outputTruncated: true, payloadExternalized: true } }),
+    completedV2(4),
+  ]));
+
+  assert.ok(records.every(record => record.profile === HAIFA_PROFILE));
+  assert.ok(records.every(record => record.integrity === "VALID"));
+  assert.equal(records[0].traceVersion, 2);
+  assert.equal(records[0].status, "SUCCESS");
+  assert.equal(records[0].summary, "Context built · input tokens=900 · items=7");
+  assert.equal(records[1].status, "STARTED");
+  assert.equal(records[2].isError, true);
+  assert.equal(records[2].status, "FAILURE");
+  assert.equal(records[2].summary, "file.read failed · truncated · externalized");
+  assert.ok(records[2].timestampMs > 0);
+});
+
+test("flags V2 records missing required lifecycle or timestampMs", () => {
+  const records = parseJsonl(jsonl([
+    traceV2(1, { timestampMs: undefined }),
+    traceV2(2, { lifecycle: "COMPLETED", outcome: undefined }),
+    completedV2(3),
+  ]));
+  assert.ok(records[0].issues.includes("INVALID_TIMESTAMPMS"));
+  assert.ok(records[1].issues.includes("MISSING_OUTCOME"));
 });

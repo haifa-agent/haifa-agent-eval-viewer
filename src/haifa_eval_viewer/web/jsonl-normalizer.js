@@ -9,10 +9,12 @@
   const HAIFA_PROFILE = "Haifa Runtime Trace V1";
   const GENERIC_PROFILE = "Generic JSONL";
   const HAIFA_SCHEMA = "haifa-runtime-trace";
-  const HAIFA_SCHEMA_VERSION = 1;
   const RECORD_TYPE = "trace.event";
   const SCOPES = new Set(["STREAM", "RUN", "ATTEMPT", "ITERATION", "STEP", "TOOL_CALL"]);
   const STATUSES = new Set(["STARTED", "ACTIVE", "SUCCESS", "FAILURE", "UNKNOWN"]);
+  const LIFECYCLES = new Set(["STARTED", "ACTIVE", "COMPLETED"]);
+  const OUTCOMES = new Set(["SUCCESS", "FAILURE", "UNKNOWN"]);
+  const SUPPORTED_SCHEMA_VERSIONS = new Set([1, 2]);
   const KNOWN_OPERATIONS = new Set([
     "stream.completed", "attempt.started", "run.started", "run.completed", "run.failed", "run.cancelled", "run.timeout",
     "loop.iteration", "context.built", "context.forced-rebuild", "model.invoke", "model.error", "model.context-too-long",
@@ -91,7 +93,7 @@
     return isObject(value)
       && value.recordType === RECORD_TYPE
       && value.schema === HAIFA_SCHEMA
-      && value.schemaVersion === HAIFA_SCHEMA_VERSION;
+      && SUPPORTED_SCHEMA_VERSIONS.has(value.schemaVersion);
   }
 
   function resemblesHaifaTrace(value) {
@@ -137,6 +139,16 @@
     return value === null || value === undefined || value === "" ? "" : `${label}=${compact(value, 80)}`;
   }
 
+  /** Reads the first present key, bridging V1 and V2 attribute names. */
+  function either(attributes, v2Key, v1Key) {
+    return attributes[v2Key] !== undefined ? attributes[v2Key] : attributes[v1Key];
+  }
+
+  function eitherMetric(attributes, v2Key, v1Key, label) {
+    const value = either(attributes, v2Key, v1Key);
+    return value === null || value === undefined || value === "" ? "" : `${label}=${compact(value, 80)}`;
+  }
+
   function haifaSummary(record) {
     const attributes = record.attributes;
     const provider = record.provider ? ` · ${record.provider}` : "";
@@ -157,11 +169,11 @@
         return [
           "Context built",
           metric(attributes, "estimatedInputTokens", "input tokens"),
-          metric(attributes, "selectedItems", "items"),
+          eitherMetric(attributes, "selectedItemCount", "selectedItems", "items"),
           attributes.compacted === true ? "compacted" : "",
         ].filter(Boolean).join(" · ");
       case "context.forced-rebuild":
-        return ["Context forced rebuild", metric(attributes, "forcedRebuildAttempt", "attempt"), metric(attributes, "estimatedInputTokens", "input tokens")].filter(Boolean).join(" · ");
+        return ["Context forced rebuild", eitherMetric(attributes, "forcedRebuildCount", "forcedRebuildAttempt", "count"), metric(attributes, "estimatedInputTokens", "input tokens")].filter(Boolean).join(" · ");
       case "model.invoke":
         return [
           `${record.tool || attributes.modelId || "Model"}${provider}`,
@@ -182,8 +194,8 @@
       case "tool.persisted":
         return [
           `${record.tool || "Tool"} ${record.status === "FAILURE" ? "failed" : "completed"}`,
-          attributes.truncated === true ? "truncated" : "",
-          attributes.externalized === true ? "externalized" : "",
+          either(attributes, "outputTruncated", "truncated") === true ? "truncated" : "",
+          either(attributes, "payloadExternalized", "externalized") === true ? "externalized" : "",
         ].filter(Boolean).join(" · ");
       case "runtime.error":
       case "runtime.terminal-error":
@@ -210,6 +222,9 @@
       rawIteration: null,
       scope: "EVENT",
       profile: GENERIC_PROFILE,
+      traceVersion: null,
+      lifecycle: "",
+      outcome: "",
       provider: "",
       traceId: "",
       runId: "",
@@ -254,10 +269,18 @@
     record.stepId = directText(value, "stepId", 140);
     record.workerId = directText(value, "workerId", 140);
     record.status = directText(value, "status", 40);
+    record.traceVersion = value.schemaVersion;
+    if (record.traceVersion === 2) {
+      record.lifecycle = directText(value, "lifecycle", 40);
+      record.outcome = directText(value, "outcome", 40);
+      record.status = record.outcome || record.lifecycle;
+    }
     record.family = inferHaifaFamily(operation);
     record.role = inferHaifaRole(operation);
     record.isError = record.status === "FAILURE";
-    record.timestampMs = parseTimestamp(value.timestamp);
+    record.timestampMs = record.traceVersion === 2
+      ? parseTimestamp(value.timestampMs)
+      : parseTimestamp(value.timestamp);
     record.summary = haifaSummary(record);
     validateHaifaRecord(record);
     return record;
@@ -273,11 +296,20 @@
     requireField(record, value.producerVersion, "producerVersion", item => typeof item === "string" && item.length > 0);
     requireField(record, value.streamId, "streamId", item => typeof item === "string" && /^ts_[A-Za-z0-9_-]{22}$/.test(item));
     requireField(record, value.sequence, "sequence", item => Number.isInteger(item) && item > 0);
-    requireField(record, value.timestamp, "timestamp", item => typeof item === "string" && parseTimestamp(item) !== null);
+    if (record.traceVersion === 2) {
+      requireField(record, value.timestampMs, "timestampMs", item => Number.isInteger(item) && item > 0);
+      requireField(record, value.lifecycle, "lifecycle", item => LIFECYCLES.has(item));
+      if (value.outcome !== undefined) {
+        requireField(record, value.outcome, "outcome", item => OUTCOMES.has(item));
+      }
+      if (record.lifecycle === "COMPLETED" && value.outcome === undefined) record.issues.push("MISSING_OUTCOME");
+    } else {
+      requireField(record, value.timestamp, "timestamp", item => typeof item === "string" && parseTimestamp(item) !== null);
+      requireField(record, value.status, "status", item => STATUSES.has(item));
+    }
     requireField(record, value.operation, "operation", item => typeof item === "string" && item.length > 0);
     requireField(record, value.phase, "phase", item => typeof item === "string" && item.length > 0);
     requireField(record, value.scope, "scope", item => SCOPES.has(item));
-    requireField(record, value.status, "status", item => STATUSES.has(item));
     requireField(record, value.attributes, "attributes", isObject);
     if (!KNOWN_OPERATIONS.has(record.operation)) record.issues.push("UNKNOWN_OPERATION");
     if (record.scope === "STREAM") {
@@ -432,12 +464,14 @@
       }
       const completions = group.filter(record => record.operation === "stream.completed");
       const completion = completions.length === 1 ? completions[0] : null;
+      const dropped = completion?.value.attributes?.droppedEventCount ?? completion?.value.attributes?.droppedEvents;
+      const written = completion?.value.attributes?.writtenEventCount ?? completion?.value.attributes?.writtenEvents;
       const sequenceHealthy = group.every(record => !record.issues.some(issue => ["DUPLICATE_SEQUENCE", "OUT_OF_ORDER_SEQUENCE", "SEQUENCE_GAP", "INVALID_SEQUENCE"].includes(issue)));
       const clean = sequenceHealthy && completion
         && completion === group[group.length - 1]
         && completion.value.attributes?.cleanClose === true
-        && completion.value.attributes?.droppedEvents === 0
-        && completion.value.attributes?.writtenEvents === group.length;
+        && dropped === 0
+        && written === group.length;
       if (!clean) {
         for (const record of group) record.issues.push("TRACE_INCOMPLETE");
       }

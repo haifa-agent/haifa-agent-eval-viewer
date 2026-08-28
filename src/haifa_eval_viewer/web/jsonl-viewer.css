@@ -300,6 +300,41 @@ td code { color: #cce1da; }
 .raw-content { margin: 0; padding: 8px 11px; color: #bed2cb; white-space: pre-wrap; overflow-wrap: anywhere; font: 10px/1.5 ui-monospace, SFMono-Regular, Consolas, monospace; }
 
 .empty-state { padding: 48px 20px; color: var(--muted); text-align: center; font-size: 11px; }
+
+.hierarchy-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 16px; border-bottom: 1px solid var(--line); }
+.hierarchy-toolbar .muted { font-size: 10px; }
+.hierarchy-actions { display: flex; gap: 7px; }
+.hierarchy-layout { display: grid; grid-template-columns: minmax(380px, .9fr) minmax(430px, 1.1fr); min-height: 640px; }
+.call-tree { max-height: 740px; overflow: auto; padding: 10px; border-right: 1px solid var(--line); }
+.call-tree .tree-group { margin-left: 15px; padding-left: 8px; border-left: 1px dashed var(--line); }
+.call-tree > .tree-group { margin-left: 0; padding-left: 0; border-left: 0; }
+.tree-group > summary { display: flex; align-items: center; flex-wrap: wrap; gap: 5px 7px; padding: 6px; border-radius: 8px; cursor: pointer; list-style: none; }
+.tree-group > summary::-webkit-details-marker { display: none; }
+.tree-group > summary:hover { background: rgba(121, 226, 179, .07); }
+.tree-group.error > summary { box-shadow: inset 3px 0 var(--danger); }
+.tree-caret { color: var(--muted); font-size: 9px; transition: transform .15s ease; }
+.tree-group[open] > summary .tree-caret { transform: rotate(90deg); }
+.tree-group > summary strong { font-size: 12px; }
+.tree-leaf {
+  width: calc(100% - 18px);
+  display: grid;
+  grid-template-columns: 52px 21px minmax(0, 1fr);
+  gap: 8px;
+  margin: 1px 0 1px 18px;
+  border: 0;
+  border-radius: 8px;
+  padding: 7px 6px;
+  color: var(--text);
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+}
+.call-tree > .tree-leaf { margin-left: 0; width: 100%; }
+.tree-leaf:hover, .tree-leaf.selected { background: rgba(121, 226, 179, .07); }
+.tree-leaf.error { box-shadow: inset 3px 0 var(--danger); }
+.tree-leaf.invalid { background: rgba(255, 123, 120, .035); }
+
 .toast { position: fixed; right: 22px; bottom: 22px; max-width: 390px; padding: 12px 15px; border: 1px solid #365448; border-radius: 11px; color: var(--text); background: #172823; box-shadow: var(--shadow); opacity: 0; transform: translateY(100px); transition: .2s ease; pointer-events: none; z-index: 50; font-size: 11px; }
 .toast.show { opacity: 1; transform: translateY(0); }
 
@@ -308,6 +343,8 @@ td code { color: #cce1da; }
   #timeline-view.active { grid-template-columns: 1fr; }
   .timeline-column { border-right: 0; border-bottom: 1px solid var(--line); }
   .event-list { max-height: 520px; }
+  .hierarchy-layout { grid-template-columns: 1fr; }
+  .call-tree { border-right: 0; border-bottom: 1px solid var(--line); max-height: 520px; }
 }
 
 @media (max-width: 720px) {
