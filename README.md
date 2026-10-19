@@ -19,7 +19,7 @@ The first release is intentionally not an evaluation runner, dashboard platform,
 - provides Activity overview, composable task filters, Task status matrix, and Semantic / Operations / Raw trajectory views;
 - loads the complete source row or JSON object for one selected event in Raw mode, including private fields present in the archive;
 - includes a framework-free JSONL Viewer for opening, dropping, or pasting arbitrary JSONL into timeline, field, tree,
-  and raw-line views; Haifa Runtime Trace envelopes receive operation-, phase-, iteration-, failure-, and Tool-correlation-aware semantics;
+  and raw-line views; only the latest self-describing Haifa Runtime Trace V1 receives Runtime semantics;
 - listens on loopback only and makes no browser or server network requests to third parties.
 
 Live tailing of an evaluation still in progress is not part of this milestone. The discovery boundary is a completed archive
@@ -43,8 +43,9 @@ Then open `http://127.0.0.1:8765`.
 
 The standalone JSONL utility is available at `http://127.0.0.1:8765/jsonl-viewer.html`. It also works without the Python
 server: directly open `src/haifa_eval_viewer/web/jsonl-viewer.html` in a browser. Parsing stays in the current browser tab;
-the page does not upload or persist opened, dropped, or pasted content. Other JSONL shapes continue to use the generic,
-fail-visible parser instead of being guessed as Haifa Runtime Trace data.
+the page does not upload or persist opened, dropped, or pasted content. V1 streams are grouped by `streamId`, ordered by
+`sequence`, and checked for gaps, duplicates, out-of-order input, and a clean `stream.completed`. Legacy V0, unknown schema
+versions, and other JSONL shapes remain visible through the generic/raw path instead of being guessed as current Runtime semantics.
 
 Raw mode is intentionally unrestricted for this single-user local Viewer. It may display prompts, reasoning, credentials,
 provider responses, hidden answers, and complete Tool payloads if the archive contains them. Raw evidence is loaded only

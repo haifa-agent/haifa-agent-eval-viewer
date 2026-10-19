@@ -40,13 +40,18 @@ const elements = {
   toast: document.querySelector("#toast"),
 };
 
+const sampleBase = {
+  recordType: "trace.event", schema: "haifa-runtime-trace", schemaVersion: 1,
+  producer: "haifa-agent-cli", producerVersion: "0.1.0-SNAPSHOT", streamId: "ts_Q83mKMf7pV0r2XaN7cFwYg",
+  traceId: "tr_zP6x5aJdC1nW8kRt4uHqBg", runId: "run-42", attemptId: "attempt-1", sessionId: "session-1", workerId: "worker-1",
+};
 const sampleLines = [
-  { timestamp: "2026-08-25T10:01:02.000Z", traceId: "trace-1", runId: "run-42", attemptId: "attempt-1", sessionId: "session-1", workerId: "worker-1", iteration: 1, phase: "BEFORE_CONTEXT_BUILD", operation: "loop.iteration", attributes: { iteration: 1 } },
-  { timestamp: "2026-08-25T10:01:02.100Z", traceId: "trace-1", runId: "run-42", attemptId: "attempt-1", sessionId: "session-1", workerId: "worker-1", iteration: 1, phase: "AFTER_CONTEXT_BUILD", operation: "context.built", attributes: { estimatedInputTokens: 1200, selectedItems: 18, compacted: false } },
-  { timestamp: "2026-08-25T10:01:03.000Z", traceId: "trace-1", runId: "run-42", attemptId: "attempt-1", sessionId: "session-1", stepId: "step-model-1", workerId: "worker-1", iteration: 1, phase: "AFTER_MODEL_CALL", operation: "model.invoke", attributes: { providerId: "example-provider", modelId: "example-model", inputTokens: 1200, outputTokens: 80, finishReason: "tool_calls" } },
-  { timestamp: "2026-08-25T10:01:03.100Z", traceId: "trace-tool-1", runId: "run-42", sessionId: "session-1", stepId: "step-tool-1", toolCallId: "call-17", iteration: 1, phase: "BEFORE_DECISION_EXECUTION", operation: "tool.execute", attributes: { toolName: "file.read", toolVersion: "1", providerId: "local" } },
-  { timestamp: "2026-08-25T10:01:03.420Z", traceId: "trace-tool-2", runId: "run-42", sessionId: "session-1", stepId: "step-tool-1", toolCallId: "call-17", iteration: 1, phase: "AFTER_DECISION_EXECUTION", operation: "tool.persisted", attributes: { successful: false, truncated: true, externalizationRequired: false, externalized: false } },
-  { timestamp: "2026-08-25T10:01:04.000Z", traceId: "attempt-1", runId: "run-42", attemptId: "attempt-1", sessionId: "session-1", workerId: "worker-1", iteration: 0, phase: "ON_ERROR", operation: "runtime.error", attributes: { errorCode: "MODEL_RESPONSE_INVALID", exceptionType: "AgentExecutionFailureException" } },
+  { ...sampleBase, sequence: 1, timestamp: "2026-08-25T10:01:02.000Z", iteration: 1, scope: "ITERATION", phase: "BEFORE_CONTEXT_BUILD", operation: "loop.iteration", status: "ACTIVE", attributes: { iteration: 1 } },
+  { ...sampleBase, sequence: 2, timestamp: "2026-08-25T10:01:02.100Z", iteration: 1, scope: "ITERATION", phase: "AFTER_CONTEXT_BUILD", operation: "context.built", status: "SUCCESS", attributes: { estimatedInputTokens: 1200, selectedItems: 18, compacted: false } },
+  { ...sampleBase, sequence: 3, timestamp: "2026-08-25T10:01:03.000Z", stepId: "step-model-1", iteration: 1, scope: "STEP", phase: "AFTER_MODEL_CALL", operation: "model.invoke", status: "SUCCESS", attributes: { providerId: "example-provider", modelId: "example-model", inputTokens: 1200, outputTokens: 80, finishReason: "tool_calls" } },
+  { ...sampleBase, sequence: 4, timestamp: "2026-08-25T10:01:03.100Z", stepId: "step-tool-1", toolCallId: "call-17", iteration: 1, scope: "TOOL_CALL", phase: "BEFORE_DECISION_EXECUTION", operation: "tool.execute", status: "STARTED", attributes: { toolName: "file.read", toolVersion: "1", providerId: "local" } },
+  { ...sampleBase, sequence: 5, timestamp: "2026-08-25T10:01:03.420Z", stepId: "step-tool-1", toolCallId: "call-17", iteration: 1, scope: "TOOL_CALL", phase: "AFTER_DECISION_EXECUTION", operation: "tool.persisted", status: "FAILURE", attributes: { toolName: "file.read", toolVersion: "1", providerId: "local", successful: false, failureCode: "TOOL_BUSINESS_FAILURE", retryable: false, truncated: true, externalizationRequired: false, externalized: false } },
+  { recordType: "trace.event", schema: "haifa-runtime-trace", schemaVersion: 1, producer: "haifa-agent-cli", producerVersion: "0.1.0-SNAPSHOT", streamId: sampleBase.streamId, sequence: 6, timestamp: "2026-08-25T10:01:04.000Z", scope: "STREAM", phase: "NONE", operation: "stream.completed", status: "SUCCESS", attributes: { writtenEvents: 6, droppedEvents: 0, cleanClose: true } },
 ];
 
 function countBy(records, field, includeEmpty = false) {
@@ -133,6 +138,7 @@ function updateStats() {
   const modelCalls = valid.filter(record => record.type === "model.invoke").length;
   const iterations = new Set(valid.filter(record => record.profile === HAIFA_PROFILE && record.type === "loop.iteration").map(record => record.iteration)).size;
   const failures = valid.filter(record => record.isError).length;
+  const integrityIssues = valid.filter(record => record.issues.length > 0).length;
   const profiles = [...new Set(valid.map(record => record.profile))];
   document.querySelector("#stat-lines").textContent = formatNumber(state.records.length);
   document.querySelector("#stat-valid").textContent = formatNumber(valid.length);
@@ -145,8 +151,8 @@ function updateStats() {
   document.querySelector("#stat-duration").textContent = formatDuration(duration);
   elements.sourceProfile.textContent = profiles.length === 1 ? profiles[0] : profiles.length > 1 ? "Mixed JSONL" : "Generic JSONL";
   elements.sourceProfile.classList.toggle("haifa", profiles.length === 1 && profiles[0] === HAIFA_PROFILE);
-  elements.parseStatus.textContent = invalid ? "PARTIAL" : "READY";
-  elements.parseStatus.classList.toggle("warning", invalid > 0);
+  elements.parseStatus.textContent = invalid ? "PARTIAL" : integrityIssues ? "TRACE_INCOMPLETE" : "READY";
+  elements.parseStatus.classList.toggle("warning", invalid > 0 || integrityIssues > 0);
 }
 
 function applyFilters() {
@@ -222,6 +228,7 @@ function renderTimeline() {
     if (record.iteration !== null) topline.append(tag(`i${record.iteration}`, "iteration"));
     if (record.phase) topline.append(tag(record.phase, "phase"));
     if (record.status) topline.append(tag(record.status));
+    if (record.issues.length) topline.append(tag(record.issues.join(", "), "warning"));
     const summary = document.createElement("span");
     summary.textContent = record.valid ? record.summary || "没有可推断的摘要" : record.parseError;
     main.append(topline, summary);
@@ -277,8 +284,12 @@ function renderDetail(record) {
     detailField("Timestamp", record.timestampMs === null ? "" : new Date(record.timestampMs).toISOString()),
     detailField("Scope", record.scope),
     detailField("Phase", record.phase),
-    detailField("Iteration", record.scope === "RUN/ATTEMPT" ? `Run-level (writer value ${record.rawIteration})` : record.iteration === null ? "" : String(record.iteration)),
+    detailField("Iteration", record.iteration === null ? "" : String(record.iteration)),
     detailField("Status", record.status),
+    detailField("Integrity", record.integrity),
+    detailField("Issues", record.issues.join(", ")),
+    detailField("Stream ID", record.streamId),
+    detailField("Sequence", record.sequence === null ? "" : String(record.sequence)),
     detailField("Tool", record.tool),
     detailField("Provider", record.provider),
     detailField("Call ID", record.callId),

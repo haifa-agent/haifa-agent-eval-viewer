@@ -52,3 +52,7 @@ Discovery is deliberately different from live monitoring. Files inside a discove
   Base64 representation, responses use `Cache-Control: no-store`, and the Viewer does not log, export, or persist them;
 - source path resolution rejects absolute, parent-traversal, and symlink escape;
 - one bad archive, trial, database, or JSONL line is isolated from other activities.
+- Runtime-aware JSONL parsing recognizes only self-describing `haifa-runtime-trace` schema version 1 records. It does not
+  maintain a Legacy V0 semantic adapter; older records stay available as generic/raw JSONL.
+- V1 integrity is evaluated per `streamId`: input order, sequence gaps and duplicates remain fail-visible, display order uses
+  `sequence`, and a missing or inconsistent `stream.completed` marks the stream `TRACE_INCOMPLETE` without changing Run status.
